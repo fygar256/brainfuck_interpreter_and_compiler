@@ -1,0 +1,5 @@
+libfsize.a
+ファイルサイズを取得するライブラリ。
+long len=fsize(FILE *fp);
+として呼び出す。エラーだったら−1Lが返る。成功すればファイルサイズが返る。
+cc file.c -o file -lfsizeとしてリンクする。
