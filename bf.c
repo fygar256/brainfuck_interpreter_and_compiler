@@ -9,23 +9,25 @@ void main(int argc,char *argv[]) {
     for(len=0; (prog[len]=fgetc(fp))!=EOF;len++);
     fclose(fp);
 
-    for(idx=0;idx<len;idx++)
-        switch (prog[idx]) {
-            case '>': ptr++; break;
-            case '<': ptr--; break;
-            case '+': (*ptr)++; break;
-            case '-': (*ptr)--; break;
-            case '.': putchar(*ptr); break;
-            case ',': *ptr=getchar(); break;
+    for(idx=0;idx<len;)
+        switch (prog[idx++]) {
+            case '>': ptr++; continue;
+            case '<': ptr--; continue;
+            case '+': (*ptr)++; continue;
+            case '-': (*ptr)--; continue;
+            case '.': putchar(*ptr); continue;
+            case ',': *ptr=getchar(); continue;
             case '[':
-                if (*ptr)
-                    loopstack[lsp++]=idx++;
-                else for(int nest=0;idx<len;)
-                        if (prog[idx++]=='[') nest++;
-                        else if (prog[idx-1]==']')
-                            if (!--nest) break;
-                break;
-            case ']': idx=loopstack[--lsp]; break;
-            default:
+                if (*ptr) loopstack[lsp++]=idx-1;
+                else for(int nest=1;idx<len;) {
+                        int c=prog[idx++];
+                        if (c=='[') nest++;
+                        else if (c==']' && --nest==0) break;
+                        }
+                continue;
+            case ']': idx=loopstack[--lsp]; continue;
+            default: continue;
             }
 }
+
+
