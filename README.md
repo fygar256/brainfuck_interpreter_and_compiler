@@ -1,4 +1,4 @@
-bf is a brainfuck interpreter.
+bf.c and bf.go are brainfuck interpreters.
 
 bfc is a brainfuck compiler to c.
 
