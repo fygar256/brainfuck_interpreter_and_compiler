@@ -19,31 +19,15 @@ func lsout(loopstack [] int) {
 
 func main() {
     if len(os.Args)!=2 {
-        fmt.Println("Usage: bfs.go <file>")
+        fmt.Println("Usage: go run bfs.go file.bf >out.s")
         return
     }
-    fmt.Println("    .text")
-    fmt.Println("    .globl  main")
-    fmt.Println("    .type   main,@function")
-    fmt.Println("main:")
-    fmt.Println(".LFB0:")
-    fmt.Println("    .cfi_startproc")
-    fmt.Println("    pushq    %rbp")
-    fmt.Println("    .cfi_def_cfa_offset 16")
-    fmt.Println("    .cfi_offset 6, -16")
-    fmt.Println("    movq    %rsp, %rbp")
-    fmt.Println("    .cfi_def_cfa_register 6")
-    fmt.Println("    subq    $30032, %rsp")
-    fmt.Println("    movq    %fs:40, %rax")
-    fmt.Println("    movq    %rax, -8(%rbp)")
-    fmt.Println("    xorl    %eax, %eax")
-    fmt.Println("    leaq    -30016(%rbp), %rax")
-    fmt.Println("    movl    $30000, %edx")
-    fmt.Println("    movl    $0, %esi")
-    fmt.Println("    movq    %rax, %rdi")
-    fmt.Println("    call    memset@PLT")
-    fmt.Println("    leaq    -30016(%rbp), %rax")
-    fmt.Println("    movq    %rax, -30024(%rbp)")
+	fmt.Println("\t.section .text");
+	fmt.Println("\t.globl _start");
+    fmt.Println("_start:");
+    fmt.Println("\tmovabs $_my_data,%rsi");
+    fmt.Println("\tmov\t$1,%edx");
+
 
     file,err := os.Open(os.Args[1])
     byteData,err:=io.ReadAll(file)
@@ -52,34 +36,21 @@ func main() {
     for idx:=0;idx<len(byteData);idx++ {
         switch byteData[idx] {
         case '>':
-            fmt.Println("    addq    $1, -30024(%rbp)")
+            fmt.Println("\tinc     %rsi")
         case '<':
-            fmt.Println("    subq    $1, -30024(%rbp)")
+            fmt.Println("\tdec     %rsi")
         case '+':
-            fmt.Println("    movq    -30024(%rbp), %rax")
-            fmt.Println("    movzbl  (%rax), %eax")
-            fmt.Println("    addl    $1, %eax")
-            fmt.Println("    movl    %eax, %edx")
-            fmt.Println("    movq    -30024(%rbp), %rax")
-            fmt.Println("    movb    %dl, (%rax)")
+            fmt.Println("\tincb     (%rsi)")
         case '-':
-            fmt.Println("    movq    -30024(%rbp), %rax")
-            fmt.Println("    movzbl  (%rax), %eax")
-            fmt.Println("    subl    $1, %eax")
-            fmt.Println("    movl    %eax, %edx")
-            fmt.Println("    movq    -30024(%rbp), %rax")
-            fmt.Println("    movb    %dl, (%rax)")
+            fmt.Println("\tdecb     (%rsi)")
         case '.':
-            fmt.Println("    movq    -30024(%rbp), %rax")
-            fmt.Println("    movzbl  (%rax), %eax")
-            fmt.Println("    movsbl  %al, %eax")
-            fmt.Println("    movl    %eax, %edi")
-            fmt.Println("    call    putchar@PLT")
+			fmt.Println("\tmov\t%edx,%eax");
+     		fmt.Println("\tmov\t%edx,%edi");
+			fmt.Println("\tsyscall");
         case ',':
-            fmt.Println("    call    getchar@PLT")
-            fmt.Println("    movl    %eax, %edx")
-            fmt.Println("    movq    -30024(%rbp), %rax")
-            fmt.Println("    movb    %dl, (%rax)")
+        	fmt.Println("\txor\t%eax, %eax")
+		    fmt.Println("\txor\t%ebx, %ebx")
+			fmt.Println("\tsyscall\n")
         case '[':
             if lf==']' {
                 loopstack[len(loopstack)-1]+=1
@@ -87,7 +58,7 @@ func main() {
                 loopstack = append(loopstack,1)
             }
             lf='['
-            fmt.Print("    jmp     LE")
+            fmt.Print("\tjmp     LE")
             lsout(loopstack)
             fmt.Println("")
             fmt.Print("LB")
@@ -101,27 +72,18 @@ func main() {
             fmt.Print("LE")
             lsout(loopstack)
             fmt.Println(":")
-            fmt.Println("    movq    -30024(%rbp), %rax")
-            fmt.Println("    movzbl  (%rax), %eax")
-            fmt.Println("    testb   %al, %al")
-            fmt.Print("    jne     LB")
+	        fmt.Println("\tcmp\t%dh,(%rsi)");
+            fmt.Print("\tjne\tLB")
             lsout(loopstack)
             fmt.Println("")
         default:
         }
     }
 
-    fmt.Println("    nop")
-    fmt.Println("    movq    -8(%rbp), %rax")
-    fmt.Println("    subq    %fs:40, %rax")
-    fmt.Println("    je      .LFE1")
-    fmt.Println("    call    __stack_chk_fail@PLT")
-    fmt.Println(".LFE1:")
-    fmt.Println("    leave")
-    fmt.Println("    .cfi_def_cfa 7, 8")
-    fmt.Println("    ret")
-    fmt.Println("    .cfi_endproc")
-    fmt.Println(".LFE0:")
-    fmt.Println("    .size   main, .-main")
-    fmt.Println("    .section .note.GNU-stack,\"\",@progbits")
+    fmt.Println("\tmov\t$1,%eax");
+    fmt.Println("\txor\t%ebx,%ebx");
+    fmt.Println("\tint $0x80");
+    fmt.Println(".section .bss");
+    fmt.Println("_my_data: .zero 65536");
 }
+
