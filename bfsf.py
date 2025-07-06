@@ -27,7 +27,7 @@ def main():
             elif c=='-':
                 print("    decb     (%rsi)")
             elif c=='.':
-                print("    mov     $4,%eax") # syscall Write
+                print("    mov     $4,%rax") # syscall Write
                 print("    mov     $1,%rdi") # fd: stdout
                 print("    mov     $1,%rdx") # count
                 print("    syscall")
