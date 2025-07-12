@@ -42,15 +42,15 @@ def main():
                 else:
                     loopstack.append(1)
                 lf='['
-                print(f"    jmp     LE{lsout(loopstack)}")
                 print(f"LB{lsout(loopstack)}:")
+                print("    cmpb   $0,(%rsi)")
+                print(f"    je     LE{lsout(loopstack)}")
             elif c==']':
                 if lf==']':
                     loopstack.pop()
                 lf=']'
+                print(f"    jmp     LB{lsout(loopstack)}")
                 print(f"LE{lsout(loopstack)}:")
-                print("    cmp     %dh,(%rsi)")
-                print(f"    jne     LB{lsout(loopstack)}")
     f.close()
     print("    mov     $1,%rax")  # syscall exit
     print("    xor     %rdi,%rdi") # status = 0
