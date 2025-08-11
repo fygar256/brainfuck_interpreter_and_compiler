@@ -27,7 +27,7 @@ hello.bfrf is helloworld for bfrf and bfrfr.
 # Brainf*ck compiler to x86_64 assembly for FreeBSD.
 
 The assembly file is output to standard output, so
-run it with go run bfs.go <file.bf> >out.s.
+run it with go run bfsf.go <file.bf> >out.s.
 
 out.s can be assembled with as,
 to assemble the assembly file with as out.s -o out.o,
