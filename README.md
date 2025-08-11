@@ -25,12 +25,8 @@ hello.bfr is helloworld for bfr and bfrr.
 hello.bfrf is helloworld for bfrf and bfrfr. 
 
 .
----
-title: Brainf*ck's Fundamentals of Computation
-tags: Brainf*ck Computer Science
-author: fygar256
-slide: false
----
+# Brainf*ck's Fundamentals of Computation
+
 Programs can be written using concatenation and branching, but Brainfuck, a rehash of P'', resolves branching using loops.
 
 Neither P'' nor Brainfuck have program addresses, labels, or branching, and their only control is nested loops. The structural theorem shows that programs can be written using concatenation, selection, and repetition, but P'' can be written using only concatenation and repetition.
