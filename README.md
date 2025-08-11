@@ -24,7 +24,17 @@ hello.bfr is helloworld for bfr and bfrr.
 
 hello.bfrf is helloworld for bfrf and bfrfr. 
 
-.
+# Brainf*ck compiler to x86_64 assembly for FreeBSD.
+
+The assembly file is output to standard output, so
+run it with go run bfs.go <file.bf> >out.s.
+
+out.s can be assembled with as,
+to assemble the assembly file with as out.s -o out.o,
+and link it with ld out.o -o out.
+
+Run it with ./out.
+
 # Brainf*ck's Fundamentals of Computation
 
 Programs can be written using concatenation and branching, but Brainfuck, a rehash of P'', resolves branching using loops.
