@@ -23,7 +23,8 @@ def convert_brainfuck(filename):
         '.': 'output',
         ',': 'input',
         '[': 'while *p',
-        ']': 'wend'
+        ']': 'wend',
+        '\n': 'eol'
     }
     
     try:

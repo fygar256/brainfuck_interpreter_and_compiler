@@ -34,6 +34,9 @@ void main(int argc,char *argv[]) {
             case ']':
                 printf("wend\n");
                 break;
+            case '\n':
+                printf("eol\n");
+                break
             default:
             }
     }
