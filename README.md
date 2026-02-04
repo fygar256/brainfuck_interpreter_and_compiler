@@ -1,3 +1,8 @@
+FILES:
+beef.py,beef.c extended brainfuck interpreters
+
+bfo.py brainfuck compressor
+
 bf.c and bf.go are brainfuck interpreters.
 
 bfa.c,bfa.py are brainfuck disassemblers in c and python for axx
