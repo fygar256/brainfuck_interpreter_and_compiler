@@ -7,9 +7,12 @@
 #define MAX_CODE_SIZE 1000000
 #define MAX_INSTRUCTIONS 1000000
 
-typedef struct {
+typedef struct Instruction {
     char cmd;
-    int count;
+    union {
+        int count;
+        struct Instruction *jump;
+    };
 } Instruction;
 
 typedef struct {
@@ -159,71 +162,182 @@ int build_bracket_map(Program *prog) {
 }
 
 // Run the brainfuck program
+#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
+// Run the brainfuck program
 void run_brainfuck(Program *prog, const char *input_stream, int input_len) {
     unsigned char memory[MEMORY_SIZE] = {0};
-    int ptr = 0;
-    int ip = 0;
+    unsigned int ptr = 0;
+    Instruction *ip = prog->instructions;
     int input_ptr = 0;
-    
-    while (ip < prog->count) {
-        Instruction instr = prog->instructions[ip];
-        
-        switch (instr.cmd) {
-            case '+':
-                memory[ptr] = (memory[ptr] + instr.count) % 256;
-                ip++;
-                break;
-                
+    for (int i = 0; i < prog->count; i++) {
+        switch (prog->instructions[i].cmd) {
             case '-':
-                memory[ptr] = (memory[ptr] - instr.count) % 256;
-                ip++;
+                prog->instructions[i].cmd = '+';
+                prog->instructions[i].count = -prog->instructions[i].count;
                 break;
-                
-            case '>':
-                ptr = (ptr + instr.count) % MEMORY_SIZE;
-                ip++;
-                break;
-                
+
             case '<':
-                ptr = (ptr - instr.count + MEMORY_SIZE * ((instr.count / MEMORY_SIZE) + 1)) % MEMORY_SIZE;
-                ip++;
+                prog->instructions[i].cmd = '>';
+                prog->instructions[i].count = -prog->instructions[i].count;
                 break;
-                
-            case '.':
-                for (int i = 0; i < instr.count; i++) {
-                    putchar(memory[ptr]);
-                }
-                fflush(stdout);
-                ip++;
-                break;
-                
-            case ',':
-                for (int i = 0; i < instr.count; i++) {
-                    if (input_ptr < input_len) {
-                        memory[ptr] = (unsigned char)input_stream[input_ptr++];
-                    } else {
-                        memory[ptr] = 0;
-                    }
-                }
-                ip++;
-                break;
-                
+
             case '[':
-                if (memory[ptr] == 0) {
-                    ip = prog->bracket_map[ip] + 1;
-                } else {
-                    ip++;
-                }
+                prog->instructions[i].jump = &prog->instructions[prog->bracket_map[i]];
                 break;
-                
+
             case ']':
-                if (memory[ptr] != 0) {
-                    ip = prog->bracket_map[ip] + 1;
-                } else {
-                    ip++;
-                }
+                prog->instructions[i].jump = &prog->instructions[prog->bracket_map[i]];
                 break;
         }
+    }
+    if (prog->count >= prog->capacity) {
+        prog->capacity++;
+        prog->instructions = realloc(prog->instructions, 
+                                    sizeof(Instruction) * prog->capacity);
+    }
+    prog->instructions[prog->count].cmd = '!';
+    prog->instructions[prog->count].count = 1;
+    prog->count++;
+
+    if (likely(ip->cmd == '>')) {
+        goto exec_move;
+    } else if (likely(ip->cmd == '+')) {
+        goto exec_adjust;
+    } else if (likely(ip->cmd == '[')) {
+        goto exec_open;
+    } else if (likely(ip->cmd == ']')) {
+        goto exec_close;
+    } else if (likely(ip->cmd == '.')) {
+        goto exec_putchar;
+    } else if (likely(ip->cmd == ',')) {
+        goto exec_getchar;
+    } else {
+        return;
+    }
+  exec_move:
+    ptr = (ptr + ip->count) % MEMORY_SIZE;
+    ip++;
+    if (likely(ip->cmd == '+')) {
+        goto exec_adjust;
+    } else if (likely(ip->cmd == '[')) {
+        goto exec_open;
+    } else if (likely(ip->cmd == ']')) {
+        goto exec_close;
+    } else if (likely(ip->cmd == '.')) {
+        goto exec_putchar;
+    } else if (likely(ip->cmd == ',')) {
+        goto exec_getchar;
+    } else if (likely(ip->cmd == '!')) {
+        return;
+    } else {
+        goto exec_move;
+    }
+  exec_adjust:
+    memory[ptr] = memory[ptr] + ip->count;
+    ip++;
+    if (likely(ip->cmd == '>')) {
+        goto exec_move;
+    } else if (likely(ip->cmd == '[')) {
+        goto exec_open;
+    } else if (likely(ip->cmd == ']')) {
+        goto exec_close;
+    } else if (likely(ip->cmd == '.')) {
+        goto exec_putchar;
+    } else if (likely(ip->cmd == ',')) {
+        goto exec_getchar;
+    } else if (likely(ip->cmd == '!')) {
+        return;
+    } else {
+        goto exec_adjust;
+    }
+  exec_open:
+    if (memory[ptr] == 0) {
+        ip = ip->jump + 1;
+    } else {
+        ip++;
+    }
+    if (likely(ip->cmd == '>')) {
+        goto exec_move;
+    } else if (likely(ip->cmd == '+')) {
+        goto exec_adjust;
+    } else if (likely(ip->cmd == ']')) {
+        goto exec_close;
+    } else if (likely(ip->cmd == '.')) {
+        goto exec_putchar;
+    } else if (likely(ip->cmd == ',')) {
+        goto exec_getchar;
+    } else if (likely(ip->cmd == '!')) {
+        return;
+    } else {
+        goto exec_open;
+    }
+  exec_close:
+    if (memory[ptr] != 0) {
+        ip = ip->jump + 1;
+    } else {
+        ip++;
+    }
+    if (likely(ip->cmd == '>')) {
+        goto exec_move;
+    } else if (likely(ip->cmd == '+')) {
+        goto exec_adjust;
+    } else if (likely(ip->cmd == '[')) {
+        goto exec_open;
+    } else if (likely(ip->cmd == '.')) {
+        goto exec_putchar;
+    } else if (likely(ip->cmd == ',')) {
+        goto exec_getchar;
+    } else if (likely(ip->cmd == '!')) {
+        return;
+    } else {
+        goto exec_close;
+    }
+  exec_putchar:
+    for (int i = 0; i < ip->count; i++) {
+        putchar(memory[ptr]);
+    }
+    fflush(stdout);
+    ip++;
+    if (likely(ip->cmd == '>')) {
+        goto exec_move;
+    } else if (likely(ip->cmd == '+')) {
+        goto exec_adjust;
+    } else if (likely(ip->cmd == '[')) {
+        goto exec_open;
+    } else if (likely(ip->cmd == ']')) {
+        goto exec_close;
+    } else if (likely(ip->cmd == ',')) {
+        goto exec_getchar;
+    } else if (likely(ip->cmd == '!')) {
+        return;
+    } else {
+        goto exec_putchar;
+    }
+  exec_getchar:
+    for (int i = 0; i < ip->count; i++) {
+        if (input_ptr < input_len) {
+            memory[ptr] = (unsigned char)input_stream[input_ptr++];
+        } else {
+            memory[ptr] = 0;
+        }
+    }
+    ip++;
+    if (likely(ip->cmd == '>')) {
+        goto exec_move;
+    } else if (likely(ip->cmd == '+')) {
+        goto exec_adjust;
+    } else if (likely(ip->cmd == '[')) {
+        goto exec_open;
+    } else if (likely(ip->cmd == ']')) {
+        goto exec_close;
+    } else if (likely(ip->cmd == '.')) {
+        goto exec_putchar;
+    } else if (likely(ip->cmd == '!')) {
+        return;
+    } else {
+        goto exec_getchar;
     }
 }
 
