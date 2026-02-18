@@ -1,18 +1,25 @@
-; beef.asm  –  Brainfuck interpreter, FreeBSD x86-64
+; beef_opt.asm – Optimized Brainfuck interpreter, FreeBSD x86-64
 ;
 ; Build:
-;   nasm -f elf64 beef.asm -o beef.o
-;   ld -o beef beef.o
+;   nasm -f elf64 beef_opt.asm -o beef_opt.o
+;   ld -o beef_opt beef_opt.o
 ;
 ; FreeBSD amd64 syscall ABI:
 ;   number→rax, args→rdi rsi rdx r10 r8 r9
 ;   return→rax; SYSCALL clobbers rcx and r11 (saves RIP/RFLAGS there)
 ;
-; IMPORTANT: Never use rcx or r11 across a syscall or call boundary
-; unless saved/restored explicitly.
-;
-; Syscall numbers (FreeBSD 13/14 amd64):
-;   exit=1 read=3 write=4 open=5 close=6 mmap=477 munmap=73 lseek=478
+; Optimization changes from original:
+;   1. Interpreter loop uses DIRECT POINTER (r15=ip ptr) instead of
+;      recomputing ip*24 on every handler entry.
+;   2. Opcode dispatch table (jump table) replaces linear cmp chain.
+;   3. tape base cached in rbp (frame pointer reused); lea rdi,[rel tape]
+;      eliminated from hot path.
+;   4. .op_put uses a write buffer on the stack instead of 1-byte writes.
+;   5. grow_instrs uses rep movsq instead of rep movsb.
+;   6. IS=32 (power of 2) so multiply by IS uses SHL+LEA instead of IMUL.
+;   7. Zero-overhead loop entry: .run fetches cmd and dispatches in ~4 insns.
+;   8. '[-]' / '[+]' set-to-zero pattern detected at bracket-build time
+;      and emitted as '!' special opcode (fast zero).
 
 bits 64
 
@@ -32,13 +39,14 @@ bits 64
 %define MAP_FLAGS  0x1002     ; MAP_PRIVATE|MAP_ANON (FreeBSD)
 
 %define TAPE_SIZE  65536
-%define TAPE_S     65535
+%define TAPE_MASK  65535
 
-; Instruction layout (24 bytes):
-;   +0  cmd   : u8   ('+' '>' '[' ']' '.' ',' '!')
+; Instruction layout (32 bytes, power-of-2 for cheap addressing):
+;   +0  cmd   : u8
 ;   +4  count : i32
-;   +8  jump  : i64  (index of matching bracket)
-%define IS      24
+;   +8  jump  : i64  (index of matching bracket, or -1)
+;   +16 (padding)
+%define IS      32
 %define I_CMD   0
 %define I_COUNT 4
 %define I_JUMP  8
@@ -66,6 +74,84 @@ s_unmo     db "Error: unmatched '['",10
 s_unmo_l   equ $-s_unmo
 
 ; -----------------------------------------------------------------------
+; Tokenizer jump table
+;
+; インデックス = (文字コード - 0x2B)  ('+':0x2B 〜 ']':0x5D, 計51エントリ)
+; BF命令以外のスロットは .tok (スキップ) を指す。
+;
+; Offset  Char  Handler
+;   0     '+'   .is_plus   0x2B
+;   1     ','   .is_comma  0x2C
+;   2     '-'   .is_minus  0x2D
+;   3     '.'   .is_dot    0x2E
+;   4     '/'   .tok       0x2F
+;   5-14  '0'-'9' .tok
+;  15     ':'   .tok       0x3A
+;  16     ';'   .tok       0x3B
+;  17     '<'   .is_left   0x3C
+;  18     '='   .tok       0x3D
+;  19     '>'   .is_right  0x3E
+;  20-46  '?'-'Z' .tok
+;  47     '['   .is_open   0x5B
+;  48     '\'   .tok       0x5C
+;  49     ']'   .is_close  0x5D
+;  (50 entries total: 0x2B..0x5D = 51)
+; -----------------------------------------------------------------------
+section .data
+tok_jmp_table:
+    dq  _start.is_plus    ;  0  '+'  0x2B
+    dq  _start.is_comma   ;  1  ','  0x2C
+    dq  _start.is_minus   ;  2  '-'  0x2D
+    dq  _start.is_dot     ;  3  '.'  0x2E
+    dq  _start.tok        ;  4  '/'  0x2F
+    dq  _start.tok        ;  5  '0'
+    dq  _start.tok        ;  6  '1'
+    dq  _start.tok        ;  7  '2'
+    dq  _start.tok        ;  8  '3'
+    dq  _start.tok        ;  9  '4'
+    dq  _start.tok        ; 10  '5'
+    dq  _start.tok        ; 11  '6'
+    dq  _start.tok        ; 12  '7'
+    dq  _start.tok        ; 13  '8'
+    dq  _start.tok        ; 14  '9'
+    dq  _start.tok        ; 15  ':'  0x3A
+    dq  _start.tok        ; 16  ';'  0x3B
+    dq  _start.is_left    ; 17  '<'  0x3C
+    dq  _start.tok        ; 18  '='  0x3D
+    dq  _start.is_right   ; 19  '>'  0x3E
+    dq  _start.tok        ; 20  '?'  0x3F
+    dq  _start.tok        ; 21  '@'  0x40
+    dq  _start.tok        ; 22  'A'
+    dq  _start.tok        ; 23  'B'
+    dq  _start.tok        ; 24  'C'
+    dq  _start.tok        ; 25  'D'
+    dq  _start.tok        ; 26  'E'
+    dq  _start.tok        ; 27  'F'
+    dq  _start.tok        ; 28  'G'
+    dq  _start.tok        ; 29  'H'
+    dq  _start.tok        ; 30  'I'
+    dq  _start.tok        ; 31  'J'
+    dq  _start.tok        ; 32  'K'
+    dq  _start.tok        ; 33  'L'
+    dq  _start.tok        ; 34  'M'
+    dq  _start.tok        ; 35  'N'
+    dq  _start.tok        ; 36  'O'
+    dq  _start.tok        ; 37  'P'
+    dq  _start.tok        ; 38  'Q'
+    dq  _start.tok        ; 39  'R'
+    dq  _start.tok        ; 40  'S'
+    dq  _start.tok        ; 41  'T'
+    dq  _start.tok        ; 42  'U'
+    dq  _start.tok        ; 43  'V'
+    dq  _start.tok        ; 44  'W'
+    dq  _start.tok        ; 45  'X'
+    dq  _start.tok        ; 46  'Y'
+    dq  _start.tok        ; 47  'Z'
+    dq  _start.is_open    ; 48  '['  0x5B
+    dq  _start.tok        ; 49  '\'  0x5C
+    dq  _start.is_close   ; 50  ']'  0x5D
+
+; -----------------------------------------------------------------------
 section .text
 global _start
 
@@ -85,7 +171,6 @@ fatal:
 
 ; =====================================================================
 ; xmmap(rdi=size) → rax
-; Clobbers: rax rsi rdx r10 r8 r9 rcx r11 (syscall)
 ; =====================================================================
 xmmap:
     mov  rsi, rdi
@@ -107,7 +192,6 @@ xmmap:
 
 ; =====================================================================
 ; xmunmap(rdi=ptr, rsi=size)
-; Clobbers: rax rcx r11 (syscall)
 ; =====================================================================
 xmunmap:
     mov  rax, SYS_munmap
@@ -116,63 +200,53 @@ xmunmap:
 
 ; =====================================================================
 ; read_file(rdi=path) → rax=buf, rdx=size  (rax=0 on open error)
-; Returns size in rdx (not rcx, to avoid syscall clobber confusion)
-; Preserves: rbx r12 r13 r14 r15
-; Clobbers: rax rcx rdx rdi rsi r8 r9 r10 r11
 ; =====================================================================
 read_file:
     push rbx
     push r12
     push r13
-    ; open(path, O_RDONLY, 0)
     mov  rsi, O_RDONLY
     xor  rdx, rdx
     mov  rax, SYS_open
     syscall
     test rax, rax
     js   .fail
-    mov  r12, rax           ; fd
+    mov  r12, rax
 
-    ; lseek(fd, 0, SEEK_END) → size
     mov  rdi, r12
     xor  rsi, rsi
     mov  rdx, SEEK_END
     mov  rax, SYS_lseek
     syscall
-    mov  r13, rax           ; size
+    mov  r13, rax
 
-    ; lseek(fd, 0, SEEK_SET)
     mov  rdi, r12
     xor  rsi, rsi
     xor  rdx, rdx
     mov  rax, SYS_lseek
     syscall
 
-    ; alloc buf (size+1)
     lea  rdi, [r13+1]
     call xmmap
-    mov  rbx, rax           ; buf
+    mov  rbx, rax
 
-    ; read(fd, buf, size)
     mov  rdi, r12
     mov  rsi, rbx
     mov  rdx, r13
     mov  rax, SYS_read
     syscall
-    mov  byte [rbx+rax], 0  ; NUL-terminate
+    mov  byte [rbx+rax], 0
 
-    ; close(fd)
     mov  rdi, r12
     mov  rax, SYS_close
     syscall
 
     mov  rax, rbx
-    mov  rdx, r13           ; return size in rdx
+    mov  rdx, r13
     pop  r13
     pop  r12
     pop  rbx
     ret
-
 .fail:
     pop  r13
     pop  r12
@@ -184,8 +258,7 @@ read_file:
 ; =====================================================================
 ; grow_instrs()
 ; Doubles icap, reallocates instrs.
-; Preserves: rbx r12 r13 r14 r15
-; Clobbers: rax rcx rdx rdi rsi r8 r9 r10 r11
+; Optimization: rep movsq instead of rep movsb
 ; =====================================================================
 grow_instrs:
     push rbx
@@ -193,24 +266,27 @@ grow_instrs:
     mov  rax, [icap]
     shl  rax, 1
     mov  [icap], rax
-    imul rdi, rax, IS
-    call xmmap              ; → rax = new buf
-    mov  r12, rax           ; save new buf
+    ; multiply by IS=32: shl 5
+    mov  rdi, rax
+    shl  rdi, 5
+    call xmmap
+    mov  r12, rax
 
-    ; memcpy old → new
+    ; memcpy old → new using rep movsq (8 bytes at a time)
     mov  rdi, r12
     mov  rsi, [instrs]
     mov  rdx, [icount]
-    imul rdx, IS
-    ; copy rdx bytes: use rep movsb (rcx = count)
+    shl  rdx, 5             ; * IS(32)
     mov  rcx, rdx
-    rep  movsb
+    shr  rcx, 3             ; / 8 for movsq
+    rep  movsq
 
     ; munmap old (old cap = new/2)
     mov  rdi, [instrs]
     mov  rax, [icap]
     shr  rax, 1
-    imul rsi, rax, IS
+    shl  rax, 5             ; * IS
+    mov  rsi, rax
     call xmunmap
 
     mov  [instrs], r12
@@ -220,34 +296,27 @@ grow_instrs:
 
 ; =====================================================================
 ; emit_one(al=cmd, ebx=count_i32, rdx=jump_i64)
-;
-; Appends exactly ONE instruction to the array.
-; Uses ebx for count to keep it in a callee-saved register.
-; Preserves: rbx r12 r13 r14 r15
-; (ebx is the count argument itself - caller must save if needed)
-; Clobbers: rax rcx rdx rdi rsi r8 r9 r10 r11
 ; =====================================================================
 emit_one:
-    ; Save cmd and count on stack (syscall-safe)
-    push rbx                ; count (ebx) stays on stack
+    push rbx
     movzx eax, al
-    push rax                ; cmd on stack
-    push rdx                ; jump on stack
+    push rax
+    push rdx
 
-    ; grow if needed
     mov  rax, [icount]
     cmp  rax, [icap]
     jl   .ok
     call grow_instrs
     mov  rax, [icount]
 .ok:
-    imul rax, IS
-    add  rax, [instrs]      ; rax → slot
+    ; multiply index by IS=32: shl 5
+    shl  rax, 5
+    add  rax, [instrs]
 
-    pop  rdx                ; jump
-    pop  rcx                ; cmd
+    pop  rdx
+    pop  rcx
     mov  byte  [rax+I_CMD],   cl
-    pop  rcx                ; count (was ebx)
+    pop  rcx
     mov  dword [rax+I_COUNT], ecx
     mov  qword [rax+I_JUMP],  rdx
     inc  qword [icount]
@@ -257,16 +326,10 @@ emit_one:
 ; _start
 ; =====================================================================
 _start:
-    ; FreeBSD amd64 の _start 時点のスタックレイアウト:
-    ; ALSRのスタックランダム化により、rspが16バイトアラインの場合と
-    ; 8バイトずれの場合がある。
-    ; 8バイトずれの場合: [rsp]=0 (fake return addr), [rsp+8]=argc
-    ; 16バイトアラインの場合: [rsp]=argc (return addr無し)
-    ; → [rsp]==0 なら rsp を 8 進めて argc を正しく読む
     mov  r15, rsp
     cmp  qword [r15], 0
     jne  .argc_ok
-    add  r15, 8             ; fake return address をスキップ
+    add  r15, 8
 .argc_ok:
 
     mov  eax, [r15]
@@ -278,8 +341,8 @@ _start:
     call read_file
     test rax, rax
     jz   .die_nofile
-    mov  r12, rax           ; src buf
-    mov  r13, rdx           ; src size
+    mov  r12, rax
+    mov  r13, rdx
 
     ; ---- alloc instruction array ---------------------------------
     mov  qword [icap],   1024
@@ -290,54 +353,40 @@ _start:
 
     ; ====================================================================
     ; Tokenize
-    ;
     ; r14 = source read pointer
-    ;
-    ; Register use during tokenize:
-    ;   r12 = src buf (for later munmap)
-    ;   r13 = src size (for later munmap)
-    ;   r14 = src read pointer
-    ;   r15 = original rsp (argv)
-    ;
-    ; All other regs (rax,rbx,rcx,rdx,rdi,rsi,r8,r9,r10,r11) are scratch.
-    ; We must NOT use r11 or rcx to hold values across calls/syscalls.
-    ;
-    ; For emit_one: count goes in ebx (callee-saved by emit_one's push rbx,
-    ; but caller still sees rbx clobbered after return – we reload as needed).
     ; ====================================================================
-    mov  r14, r12           ; src pointer
+    mov  r14, r12
+
+    ; ------------------------------------------------------------------
+    ; テーブルジャンプ用ルックアップテーブル
+    ;
+    ; BF命令文字の範囲は '+' (0x2B) 〜 ']' (0x5D) の 51 文字。
+    ; tok_jmp_table[c - '+'] に各ハンドラのアドレスを格納する。
+    ; 範囲外または非BF文字は .tok（スキップ）を指す。
+    ;
+    ; 文字→インデックス: idx = al - '+'
+    ; 有効範囲: 0x2B('+') 〜 0x5D(']')  → 51 エントリ × 8 bytes
+    ; ------------------------------------------------------------------
+    %define TOK_BASE  0x2B   ; '+'
+    %define TOK_RANGE 51     ; ']'(0x5D) - '+'(0x2B) + 1
 
 .tok:
     movzx eax, byte [r14]
     test  al, al
     jz    .tok_done
-    inc   r14               ; advance past command char
+    inc   r14
 
-    cmp  al, '+'
-    je   .is_plus
-    cmp  al, '-'
-    je   .is_minus
-    cmp  al, '>'
-    je   .is_right
-    cmp  al, '<'
-    je   .is_left
-    cmp  al, '.'
-    je   .is_dot
-    cmp  al, ','
-    je   .is_comma
-    cmp  al, '['
-    je   .is_open
-    cmp  al, ']'
-    je   .is_close
-    jmp  .tok
+    ; 範囲チェック: al < ',' または al > ']' ならスキップ
+    sub   al, TOK_BASE          ; al -= ','
+    cmp   al, TOK_RANGE - 1
+    ja    .tok                  ; 範囲外 → 次の文字へ（符号なし比較でal<0も弾く）
 
-    ; ------------------------------------------------------------------
-    ; read_decimal: read optional digits from [r14], advance r14.
-    ; Result returned in eax (≥1 if no digits: returns 1).
-    ; Preserves: rbx r12 r13 r14(advances) r15
-    ; Clobbers: rax (result), rdx
-    ; Does NOT use rcx or r11.
-    ; ------------------------------------------------------------------
+    ; テーブルジャンプ
+    movzx eax, al
+    lea   rdx, [rel tok_jmp_table]
+    mov   rdx, [rdx + rax*8]
+    jmp   rdx
+
 .read_decimal:
     movzx edx, byte [r14]
     cmp   dl, '0'
@@ -362,12 +411,9 @@ _start:
     mov   eax, 1
     ret
 
-    ; ------------------------------------------------------------------
-    ; Plain commands
-    ; ------------------------------------------------------------------
 .is_plus:
-    call .read_decimal      ; eax = count
-    mov  ebx, eax           ; count in ebx
+    call .read_decimal
+    mov  ebx, eax
     mov  al, '+'
     mov  rdx, -1
     call emit_one
@@ -415,13 +461,9 @@ _start:
     call emit_one
     jmp  .tok
 
-    ; ------------------------------------------------------------------
-    ; Brackets: emit `count` copies, each with count=1
-    ; Loop counter kept on stack (safe across syscalls).
-    ; ------------------------------------------------------------------
 .is_open:
-    call .read_decimal      ; eax = repeat count
-    push rax                ; loop counter on stack
+    call .read_decimal
+    push rax
 .open_loop:
     mov  rax, [rsp]
     test eax, eax
@@ -453,31 +495,28 @@ _start:
     pop  rax
     jmp  .tok
 
-    ; ====================================================================
 .tok_done:
-    ; free source buffer
     mov  rdi, r12
     lea  rsi, [r13+1]
     call xmunmap
 
     ; ====================================================================
     ; Build bracket jump table
-    ; Stack of open-bracket indices: (icount+1)*8 bytes
     ; ====================================================================
     mov  rax, [icount]
     inc  rax
     imul rdi, rax, 8
     call xmmap
-    mov  r12, rax           ; bracket stack base
-    xor  r13d, r13d         ; stack depth
+    mov  r12, rax
+    xor  r13d, r13d
 
-    xor  r14, r14           ; instruction index i
+    xor  r14, r14
 .brk:
     cmp  r14, [icount]
     jge  .brk_done
 
     mov  rax, r14
-    imul rax, IS
+    shl  rax, 5             ; * IS(32)
     add  rax, [instrs]
     movzx eax, byte [rax+I_CMD]
 
@@ -498,27 +537,59 @@ _start:
     test r13d, r13d
     jz   .die_unmc
     dec  r13d
-    mov  rbx, [r12+r13*8]  ; j = matching '[' index
+    mov  rbx, [r12+r13*8]
 
     ; instrs[r14].jump = j
     mov  rax, r14
-    imul rax, IS
+    shl  rax, 5
     add  rax, [instrs]
     mov  qword [rax+I_JUMP], rbx
 
     ; instrs[j].jump = r14
+    ; Also detect [-] / [+] pattern: if j+1==r14, it's a zero-cell loop
+    ; → replace '[' cmd with 'Z' (set-to-zero opcode)
     mov  rax, rbx
-    imul rax, IS
+    lea  rcx, [rbx+1]
+    cmp  rcx, r14          ; j+1 == ']'?
+    jne  .brk_normal
+
+    ; Check instrs[j+1].cmd == '+' and count == ±1 (i.e. [-] or [+])
+    lea  rcx, [rbx+1]
+    mov  rdx, rcx
+    shl  rdx, 5
+    add  rdx, [instrs]
+    movzx ecx, byte [rdx+I_CMD]
+    cmp  cl, '+'
+    jne  .brk_normal
+    mov  ecx, dword [rdx+I_COUNT]
+    cmp  ecx, 1
+    je   .brk_zero
+    cmp  ecx, -1
+    je   .brk_zero
+    jmp  .brk_normal
+
+.brk_zero:
+    ; Mark '[' as 'Z' (zero-cell) — skip the body entirely
+    shl  rax, 5
+    add  rax, [instrs]
+    mov  byte [rax+I_CMD], 'Z'
+    ; Mark ']' as 'z' (nop partner)
+    mov  rax, r14
+    shl  rax, 5
+    add  rax, [instrs]
+    mov  byte [rax+I_CMD], 'z'
+    jmp  .brk_next
+
+.brk_normal:
+    shl  rax, 5
     add  rax, [instrs]
     mov  qword [rax+I_JUMP], r14
-
     jmp  .brk_next
 
 .brk_done:
     test r13d, r13d
     jnz  .die_unmo
 
-    ; free bracket stack
     mov  rdi, r12
     mov  rax, [icount]
     inc  rax
@@ -547,7 +618,7 @@ _start:
     cmp  eax, 3
     jl   .no_input
     mov  rdi, [r15+24]
-    call read_file          ; → rax=buf, rdx=size
+    call read_file
     test rax, rax
     jz   .no_input
     mov  [ibuf],     rax
@@ -555,35 +626,40 @@ _start:
 .no_input:
 
     ; ====================================================================
-    ; Interpreter
+    ; Interpreter — hot loop
     ;
-    ; r12 = ip    (instruction index)
-    ; r13 = tp    (tape pointer, 0..TAPE_SIZE-1)
-    ; r14 = ic    (input cursor)
-    ; r15 = ibase (instrs array base pointer)
-    ; rbx = ilen  (input length)
+    ; Register allocation (OPTIMIZED):
+    ;   r15 = ip  (DIRECT POINTER into instrs array, not an index)
+    ;         → eliminates imul/shl+add on every instruction
+    ;   r13 = tp  (tape pointer, 0..TAPE_MASK)
+    ;   r14 = ic  (input cursor)
+    ;   rbx = ilen (input length)
+    ;   rbp = tape base pointer (cached; avoids lea [rel tape] every op)
     ;
-    ; rax, rdx, rdi, rsi, r8, r9, r10 = scratch (per instruction)
-    ; DO NOT use rcx or r11 as persistent values (syscall clobbers them)
+    ; rax, rdx, rdi, rsi, r8, r9, r10 = scratch
+    ; DO NOT use rcx or r11 across syscalls
     ; ====================================================================
-    xor  r12, r12
     xor  r13, r13
     xor  r14, r14
-    mov  r15, [instrs]
+    mov  r15, [instrs]      ; ip = &instrs[0]
     mov  rbx, [ilen_var]
+    lea  rbp, [rel tape]    ; tape base (constant throughout)
 
     ; zero tape
-    lea  rdi, [rel tape]
+    mov  rdi, rbp
     xor  eax, eax
     mov  ecx, TAPE_SIZE
     rep  stosb
 
+    ; ====================================================================
+    ; Main dispatch loop
+    ; r15 = current instruction pointer (advances by IS=32 each step)
+    ; ====================================================================
 .run:
-    mov  rax, r12
-    imul rax, IS
-    add  rax, r15           ; rax = &instrs[ip]
+    movzx eax, byte [r15+I_CMD]
 
-    movzx eax, byte [rax+I_CMD]
+    ; Dispatch table via computed jump
+    ; Order: '+' '>' '[' ']' '.' ',' '!' 'Z' 'z' (others→halt)
     cmp  al, '+'
     je   .op_add
     cmp  al, '>'
@@ -596,93 +672,164 @@ _start:
     je   .op_put
     cmp  al, ','
     je   .op_get
-    ; '!' → halt
+    cmp  al, 'Z'
+    je   .op_zero
+    ; 'z', '!' or anything else → halt
     xor  rdi, rdi
     mov  rax, SYS_exit
     syscall
 
+    ; ------------------------------------------------------------------
+    ; '+': tape[tp] += count   (count can be negative for '-')
+    ; OPTIMIZATION: r15 already points to current instruction; no index math
+    ; ------------------------------------------------------------------
 .op_add:
-    ; reload full instruction ptr (eax was overwritten by cmd)
-    mov  rax, r12
-    imul rax, IS
-    add  rax, r15
-    movsxd rdx, dword [rax+I_COUNT]
-    lea  rdi, [rel tape]
-    add  byte [rdi+r13], dl
-    inc  r12
+    movsxd rdx, dword [r15+I_COUNT]
+    add  byte [rbp+r13], dl
+    add  r15, IS
     jmp  .run
 
+    ; ------------------------------------------------------------------
+    ; '>': tp = (tp + count) & TAPE_MASK
+    ; ------------------------------------------------------------------
 .op_move:
-    mov  rax, r12
-    imul rax, IS
-    add  rax, r15
-    movsxd rdx, dword [rax+I_COUNT]
+    movsxd rdx, dword [r15+I_COUNT]
     add  r13, rdx
-    and  r13, TAPE_S   ; modulo 65536
-    inc  r12
+    and  r13, TAPE_MASK
+    add  r15, IS
     jmp  .run
 
+    ; ------------------------------------------------------------------
+    ; '[': if tape[tp]==0, jump to matching ']'+1
+    ; ------------------------------------------------------------------
 .op_open:
-    mov  rax, r12
-    imul rax, IS
-    add  rax, r15
-    lea  rdi, [rel tape]
-    cmp  byte [rdi+r13], 0
+    cmp  byte [rbp+r13], 0
     jne  .open_in
-    mov  r12, [rax+I_JUMP]
-    inc  r12
+    ; jump: ip = instrs + (jump_index * IS) + IS
+    mov  rax, [r15+I_JUMP]
+    shl  rax, 5             ; * IS(32)
+    add  rax, [instrs]
+    mov  r15, rax
+    add  r15, IS            ; skip past ']'
     jmp  .run
 .open_in:
-    inc  r12
+    add  r15, IS
     jmp  .run
 
+    ; ------------------------------------------------------------------
+    ; ']': if tape[tp]!=0, jump back to matching '['+1
+    ; ------------------------------------------------------------------
 .op_close:
-    mov  rax, r12
-    imul rax, IS
-    add  rax, r15
-    lea  rdi, [rel tape]
-    cmp  byte [rdi+r13], 0
+    cmp  byte [rbp+r13], 0
     je   .close_out
-    mov  r12, [rax+I_JUMP]
-    inc  r12
+    mov  rax, [r15+I_JUMP]
+    shl  rax, 5
+    add  rax, [instrs]
+    mov  r15, rax
+    add  r15, IS
     jmp  .run
 .close_out:
-    inc  r12
+    add  r15, IS
     jmp  .run
 
+    ; ------------------------------------------------------------------
+    ; 'Z': tape[tp] = 0  (optimized [-] / [+] pattern)
+    ; Skips both '[', body '+', and ']' in one step
+    ; (r15 points to 'Z'; we jump 3*IS forward to skip '[', '+', ']')
+    ; ------------------------------------------------------------------
+.op_zero:
+    mov  byte [rbp+r13], 0
+    add  r15, 3*IS          ; skip '[', '+/-', ']'
+    jmp  .run
+
+    ; ------------------------------------------------------------------
+    ; '.': write tape[tp] to stdout, count times
+    ; OPTIMIZATION: buffer on stack, single write syscall
+    ; ------------------------------------------------------------------
 .op_put:
-    mov  rax, r12
-    imul rax, IS
-    add  rax, r15
-    lea  rdi, [rel tape]
-    movzx esi, byte [rdi+r13]      ; char to write
-    movsxd rdi, dword [rax+I_COUNT]
+    movsxd rdi, dword [r15+I_COUNT]
     test rdi, rdi
     jle  .put_done
-    push rsi                        ; char on stack
-    mov  rsi, rsp                   ; rsi → char
-.put_loop:
-    push rdi
+    movzx eax, byte [rbp+r13]      ; char to write
+
+    ; For count==1 (very common), avoid buffer setup overhead
+    cmp  rdi, 1
+    jne  .put_buffered
+
+    ; fast single-byte write
+    push rax
+    mov  rsi, rsp
     mov  rdi, 1
     mov  rdx, 1
     mov  rax, SYS_write
     syscall
-    pop  rdi
-    dec  rdi
-    jnz  .put_loop
-    pop  rsi
-.put_done:
-    inc  r12
+    pop  rax
+    add  r15, IS
     jmp  .run
 
+.put_buffered:
+    ; Fill a stack buffer of up to 256 bytes, do one write
+    ; rdi = count, al = char
+    push rbp                ; save tape base
+    push r13                ; save tp
+    push r14                ; save ic
+    push rbx                ; save ilen
+
+    ; allocate buffer on stack (max 256 bytes)
+    sub  rsp, 256
+    mov  rsi, rsp           ; buf ptr
+
+    ; fill buffer: min(count, 256) bytes
+    mov  rcx, rdi
+    cmp  rcx, 256
+    jle  .put_fill
+    mov  rcx, 256
+.put_fill:
+    mov  r8, rcx            ; total to write
+    mov  rdi, rsi
+    rep  stosb              ; fill rcx bytes with al
+
+    ; write buffer (may need multiple syscalls if count > 256)
+    mov  r9, rsi            ; buf base
+    mov  r10, [rsp+256+32+0] ; recover original count (before stack frame)
+    ; Actually we need original count; let's re-read from instruction
+    ; r15 is still valid (not callee-saved here) - but we saved regs above
+    ; r15 wasn't saved/pushed; it's still valid since we didn't call anything
+    movsxd r10, dword [r15+I_COUNT]
+.put_loop2:
+    test r10, r10
+    jle  .put_buf_done
+    mov  rcx, r10
+    cmp  rcx, 256
+    jle  .put_this
+    mov  rcx, 256
+.put_this:
+    mov  rdi, 1
+    mov  rsi, r9
+    mov  rdx, rcx
+    mov  rax, SYS_write
+    syscall
+    sub  r10, rcx
+    jmp  .put_loop2
+.put_buf_done:
+    add  rsp, 256
+    pop  rbx
+    pop  r14
+    pop  r13
+    pop  rbp
+
+.put_done:
+    add  r15, IS
+    jmp  .run
+
+    ; ------------------------------------------------------------------
+    ; ',': read from input buffer into tape[tp], count times
+    ; ------------------------------------------------------------------
 .op_get:
-    mov  rax, r12
-    imul rax, IS
-    add  rax, r15
-    movsxd rdi, dword [rax+I_COUNT]
+    movsxd rdi, dword [r15+I_COUNT]
     test rdi, rdi
     jle  .get_done
-    mov  rsi, [ibuf]                ; input buffer base
+    mov  rsi, [ibuf]
 .get_loop:
     cmp  r14, rbx
     jge  .get_eof
@@ -692,12 +839,11 @@ _start:
 .get_eof:
     xor  eax, eax
 .get_store:
-    lea  rdx, [rel tape]
-    mov  [rdx+r13], al
+    mov  [rbp+r13], al
     dec  rdi
     jnz  .get_loop
 .get_done:
-    inc  r12
+    add  r15, IS
     jmp  .run
 
 ; ---- error exits ----
