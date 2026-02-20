@@ -1,0 +1,10 @@
+{
+    ">": "ptr += 1\n",
+    "<": "ptr -= 1\n",
+    "+": "tape[ptr] = (tape[ptr] + 1) & 0xFF\n",
+    "-": "tape[ptr] = (tape[ptr] - 1) & 0xFF\n",
+    ".": "sys.stdout.write(chr(tape[ptr]))\n",
+    ",": "tape[ptr] = ord(sys.stdin.read(1))\n",
+    "[": "while tape[ptr]:\n",
+    "]": ""
+}
